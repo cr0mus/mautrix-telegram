@@ -55,8 +55,10 @@ func (gm *GhostMetadata) IsMin() bool {
 }
 
 type PortalMetadata struct {
-	IsSuperGroup      bool          `json:"is_supergroup,omitempty"`
-	IsForumGeneral    bool          `json:"is_forum_general,omitempty"`
+	IsSuperGroup   bool `json:"is_supergroup,omitempty"`
+	IsForumGeneral bool `json:"is_forum_general,omitempty"`
+	// TelegramFolderID is the Telegram chat folder (dialog filter) ID for this chat, or 0 for "All chats".
+	TelegramFolderID  int           `json:"telegram_folder_id,omitempty"`
 	ReadUpTo          int           `json:"read_up_to,omitempty"` // FIXME this shouldn't be here
 	AllowedReactions  []string      `json:"allowed_reactions"`
 	LastSync          jsontime.Unix `json:"last_sync,omitempty"`
@@ -96,6 +98,10 @@ type UserLoginMetadata struct {
 	Session     UserLoginSession `json:"session"`
 	TakeoutID   int64            `json:"takeout_id,omitempty"`
 
+	// TGFolderSpaces maps Telegram dialog filter IDs (decimal string keys) to Matrix Space rooms
+	// created as children of the personal Telegram filtering space (folder_spaces feature).
+	TGFolderSpaces map[string]id.RoomID `json:"tg_folder_spaces,omitempty"`
+
 	DialogSyncComplete bool               `json:"takeout_portal_crawl_done,omitempty"`
 	DialogSyncCursor   networkid.PortalID `json:"takeout_portal_crawl_cursor,omitempty"`
 	DialogSyncCount    int                `json:"dialog_sync_count,omitempty"`
@@ -112,6 +118,7 @@ func (u *UserLoginMetadata) ResetOnLogout() {
 	u.DialogSyncCursor = networkid.PortalID("")
 	u.DialogSyncCount = 0
 	u.PushEncryptionKey = nil
+	u.TGFolderSpaces = nil
 }
 
 type UserLoginSession struct {

@@ -115,6 +115,9 @@ type TelegramClient struct {
 	syncChatsLock      sync.Mutex
 	isNewLogin         bool
 
+	folderSpaceResyncMu    sync.Mutex
+	folderSpaceResyncTimer *time.Timer
+
 	prevReactionPoll     map[networkid.PortalKey]time.Time
 	prevReactionPollLock sync.Mutex
 

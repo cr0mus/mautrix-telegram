@@ -102,6 +102,9 @@ contact_avatars: false
 # Should contact names be updated from any source even if a name is already set?
 # Note that contact names will still be used if there's no other name available.
 contact_names: false
+# Mirror Telegram chat folders as nested Matrix Spaces under your personal Telegram Space.
+# Requires bridge.personal_filtering_spaces: true (top-level bridge config).
+folder_spaces: false
 # Should the bridge send all unicode reactions as custom emoji reactions to
 # Telegram? By default, the bridge only uses custom emojis for unicode emojis
 # that aren't allowed in reactions.

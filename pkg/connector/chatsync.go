@@ -167,6 +167,9 @@ func (tc *TelegramClient) syncChats(ctx context.Context, takeoutID int64, onLogi
 		}
 	}
 	log.Info().Msg("Finished dialog sync")
+	if tc.main.Config.FolderSpaces {
+		tc.scheduleDeferredFolderSpaceSync()
+	}
 	return nil
 }
 
@@ -224,6 +227,19 @@ func (tc *TelegramClient) handleDialogs(ctx context.Context, dialogList []tg.Dia
 		portal, err := tc.main.Bridge.GetPortalByKey(ctx, portalKey)
 		if err != nil {
 			return err
+		}
+		tgFolder := 0
+		if dlgTyped, okTyped := d.(*tg.Dialog); okTyped {
+			if fid, fidOK := dlgTyped.GetFolderID(); fidOK {
+				tgFolder = fid
+			}
+		}
+		if pm := portal.Metadata.(*PortalMetadata); pm.TelegramFolderID != tgFolder {
+			pm.TelegramFolderID = tgFolder
+			if err = portal.Save(ctx); err != nil {
+				log.Err(err).Stringer("portal", portalKey).Msg("Failed to save telegram folder id on portal")
+				return err
+			}
 		}
 		if dialog.UnreadCount == 0 && !dialog.UnreadMark {
 			portal.Metadata.(*PortalMetadata).ReadUpTo = dialog.TopMessage

@@ -90,8 +90,11 @@ type TelegramConfig struct {
 		BackwardBackfill bool `yaml:"backward_backfill"`
 	} `yaml:"takeout"`
 
-	ContactAvatars                       bool                `yaml:"contact_avatars"`
-	ContactNames                         bool                `yaml:"contact_names"`
+	ContactAvatars bool `yaml:"contact_avatars"`
+	ContactNames   bool `yaml:"contact_names"`
+	// FolderSpaces mirrors Telegram chat folders as nested Matrix Spaces under the personal filtering space.
+	// Requires bridge.personal_filtering_spaces: true in the main bridge config.
+	FolderSpaces                         bool                `yaml:"folder_spaces"`
 	MaxMemberCount                       int                 `yaml:"max_member_count"`
 	AlwaysCustomEmojiReaction            bool                `yaml:"always_custom_emoji_reaction"`
 	SavedMessagesAvatar                  id.ContentURIString `yaml:"saved_message_avatar"`
@@ -183,6 +186,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "takeout", "backward_backfill")
 	helper.Copy(up.Bool, "contact_avatars")
 	helper.Copy(up.Bool, "contact_names")
+	helper.Copy(up.Bool, "folder_spaces")
 	helper.Copy(up.Int, "max_member_count")
 	helper.Copy(up.Bool, "always_custom_emoji_reaction")
 	helper.Copy(up.Str, "saved_message_avatar")

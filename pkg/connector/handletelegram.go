@@ -945,6 +945,21 @@ func (tc *TelegramClient) onUpdate(ctx context.Context, e tg.Entities, upd tg.Up
 		return tc.onNotifySettings(ctx, e, update)
 	case *tg.UpdatePinnedDialogs:
 		return tc.onPinnedDialogs(ctx, e, update)
+	case *tg.UpdateDialogFilter:
+		tc.scheduleDeferredFolderSpaceSync()
+		return nil
+	case *tg.UpdateDialogFilters:
+		tc.scheduleDeferredFolderSpaceSync()
+		return nil
+	case *tg.UpdateDialogFilterOrder:
+		tc.scheduleDeferredFolderSpaceSync()
+		return nil
+	case *tg.UpdateFolderPeers:
+		if err := tc.applyFolderPeersUpdate(ctx, update); err != nil {
+			return err
+		}
+		tc.scheduleDeferredFolderSpaceSync()
+		return nil
 	case *tg.UpdateChatDefaultBannedRights:
 		return tc.onChatDefaultBannedRights(ctx, e, update)
 	case *tg.UpdatePeerBlocked:
