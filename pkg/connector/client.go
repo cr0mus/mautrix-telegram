@@ -527,6 +527,8 @@ func (tc *TelegramClient) runInBackground(ctx context.Context) {
 	log := zerolog.Ctx(ctx)
 	err := tc.client.Run(ctx, func(ctx context.Context) error {
 		tc.clientInitialized.Set()
+		// Best-effort: keep personal space visible even after manual leave.
+		tc.ensurePersonalSpaceMembership(log.WithContext(tc.clientCtx))
 		// If takeout dialog sync is enabled, we assume it'll resume from a getTakeoutID call.
 		// If not, resume dialog sync manually here.
 		if !tc.isNewLogin && !tc.main.Config.Takeout.DialogSync {

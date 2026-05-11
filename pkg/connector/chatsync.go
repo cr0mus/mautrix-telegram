@@ -20,6 +20,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
@@ -34,6 +35,12 @@ import (
 )
 
 func (tc *TelegramClient) syncChats(ctx context.Context, takeoutID int64, onLogin, restart bool) error {
+	// Protect against permanent stalls in sync (network hiccups, Telegram RPC waits, etc.)
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 20*time.Minute)
+		defer cancel()
+	}
 	if takeoutID != 0 && !tc.main.Config.Takeout.DialogSync {
 		return nil
 	}
