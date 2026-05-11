@@ -12,6 +12,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,28 @@ func folderSpaceMapKey(filterID int) string {
 	return strconv.Itoa(filterID)
 }
 
+// mergeTelegramCustomFolderOrder returns custom DialogFilter IDs: first in hint order (for IDs
+// present in fromAPI), then any remaining fromAPI IDs in API list order.
+func mergeTelegramCustomFolderOrder(fromAPI []int, hint []int) []int {
+	seen := make(map[int]struct{}, len(fromAPI))
+	for _, idv := range fromAPI {
+		seen[idv] = struct{}{}
+	}
+	out := make([]int, 0, len(fromAPI))
+	for _, idv := range hint {
+		if _, ok := seen[idv]; ok {
+			out = append(out, idv)
+			delete(seen, idv)
+		}
+	}
+	for _, idv := range fromAPI {
+		if _, ok := seen[idv]; ok {
+			out = append(out, idv)
+		}
+	}
+	return out
+}
+
 func sanitizeFolderTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -101,11 +124,15 @@ func (tc *TelegramClient) setPortalSpaceChild(ctx context.Context, spaceID id.Ro
 	return err
 }
 
-func (tc *TelegramClient) linkChildSpaceUnderRoot(ctx context.Context, rootSpace, childSpace id.RoomID) error {
+func (tc *TelegramClient) linkChildSpaceUnderRoot(ctx context.Context, rootSpace, childSpace id.RoomID, order string) error {
 	via := []string{tc.main.Bridge.Matrix.ServerName()}
 	ts := time.Now()
+	childEv := &event.SpaceChildEventContent{Via: via}
+	if order != "" {
+		childEv.Order = order
+	}
 	_, err := tc.main.Bridge.Bot.SendState(ctx, rootSpace, event.StateSpaceChild, childSpace.String(), &event.Content{
-		Parsed: &event.SpaceChildEventContent{Via: via},
+		Parsed: childEv,
 	}, ts)
 	if err != nil {
 		return fmt.Errorf("set space child on root: %w", err)
@@ -137,7 +164,23 @@ func (tc *TelegramClient) ensureTGFolderSpaces(ctx context.Context, rootSpace id
 		tc.metadata.TGFolderSpaces = make(map[string]id.RoomID)
 	}
 
-	validIDs := make([]int, 0, len(resp.Filters))
+	fromAPI := make([]int, 0, len(resp.Filters))
+	for _, raw := range resp.Filters {
+		df, ok := raw.(*tg.DialogFilter)
+		if !ok {
+			continue
+		}
+		fromAPI = append(fromAPI, df.ID)
+	}
+	ordered := mergeTelegramCustomFolderOrder(fromAPI, tc.metadata.TGFolderOrder)
+	if len(tc.metadata.TGFolderOrder) == 0 && len(ordered) > 0 {
+		tc.metadata.TGFolderOrder = slices.Clone(ordered)
+		if err := tc.userLogin.Save(ctx); err != nil {
+			return nil, fmt.Errorf("save initial Telegram folder order: %w", err)
+		}
+	}
+
+	validIDs := make([]int, 0, len(fromAPI))
 	for _, raw := range resp.Filters {
 		df, ok := raw.(*tg.DialogFilter)
 		if !ok {
@@ -168,6 +211,9 @@ func (tc *TelegramClient) ensureTGFolderSpaces(ctx context.Context, rootSpace id
 		if err = tc.userLogin.Save(ctx); err != nil {
 			return nil, fmt.Errorf("save user login after folder space create: %w", err)
 		}
+	}
+	if err := tc.syncTGFolderSpaceOrderUnderRoot(ctx, rootSpace, ordered); err != nil {
+		return nil, err
 	}
 	return validIDs, nil
 }
@@ -223,10 +269,35 @@ func (tc *TelegramClient) createTGFolderSpaceRoom(ctx context.Context, rootSpace
 				Msg("Failed to join folder space with double puppet")
 		}
 	}
-	if err := tc.linkChildSpaceUnderRoot(ctx, rootSpace, roomID); err != nil {
+	if err := tc.linkChildSpaceUnderRoot(ctx, rootSpace, roomID, ""); err != nil {
 		return "", err
 	}
 	return roomID, nil
+}
+
+func (tc *TelegramClient) syncTGFolderSpaceOrderUnderRoot(ctx context.Context, rootSpace id.RoomID, orderedFolderIDs []int) error {
+	if len(orderedFolderIDs) == 0 {
+		return nil
+	}
+	via := []string{tc.main.Bridge.Matrix.ServerName()}
+	ts := time.Now()
+	for idx, fid := range orderedFolderIDs {
+		child := tc.metadata.TGFolderSpaces[folderSpaceMapKey(fid)]
+		if child == "" {
+			continue
+		}
+		orderKey := fmt.Sprintf("tg-folder-%08d", idx)
+		_, err := tc.main.Bridge.Bot.SendState(ctx, rootSpace, event.StateSpaceChild, child.String(), &event.Content{
+			Parsed: &event.SpaceChildEventContent{
+				Via:   via,
+				Order: orderKey,
+			},
+		}, ts)
+		if err != nil {
+			return fmt.Errorf("set space child order for folder %d: %w", fid, err)
+		}
+	}
+	return nil
 }
 
 func (tc *TelegramClient) reconcileTelegramFolderSpaces(ctx context.Context) error {

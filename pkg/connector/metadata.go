@@ -101,6 +101,9 @@ type UserLoginMetadata struct {
 	// TGFolderSpaces maps Telegram dialog filter IDs (decimal string keys) to Matrix Space rooms
 	// created as children of the personal Telegram filtering space (folder_spaces feature).
 	TGFolderSpaces map[string]id.RoomID `json:"tg_folder_spaces,omitempty"`
+	// TGFolderOrder is the last known Telegram custom folder order (from updateDialogFilterOrder),
+	// used to set m.space.child "order" under the personal Telegram space so Element matches TG.
+	TGFolderOrder []int `json:"tg_folder_order,omitempty"`
 
 	DialogSyncComplete bool               `json:"takeout_portal_crawl_done,omitempty"`
 	DialogSyncCursor   networkid.PortalID `json:"takeout_portal_crawl_cursor,omitempty"`
@@ -119,6 +122,7 @@ func (u *UserLoginMetadata) ResetOnLogout() {
 	u.DialogSyncCount = 0
 	u.PushEncryptionKey = nil
 	u.TGFolderSpaces = nil
+	u.TGFolderOrder = nil
 }
 
 type UserLoginSession struct {

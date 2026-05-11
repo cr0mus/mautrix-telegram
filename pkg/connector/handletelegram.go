@@ -952,6 +952,12 @@ func (tc *TelegramClient) onUpdate(ctx context.Context, e tg.Entities, upd tg.Up
 		tc.scheduleDeferredFolderSpaceSync()
 		return nil
 	case *tg.UpdateDialogFilterOrder:
+		if len(update.Order) > 0 {
+			tc.metadata.TGFolderOrder = slices.Clone(update.Order)
+			if err := tc.userLogin.Save(ctx); err != nil {
+				zerolog.Ctx(ctx).Err(err).Msg("Failed to save Telegram folder order after updateDialogFilterOrder")
+			}
+		}
 		tc.scheduleDeferredFolderSpaceSync()
 		return nil
 	case *tg.UpdateFolderPeers:
