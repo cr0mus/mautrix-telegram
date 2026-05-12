@@ -12,6 +12,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -298,6 +299,93 @@ func (tc *TelegramClient) syncTGFolderSpaceOrderUnderRoot(ctx context.Context, r
 		}
 	}
 	return nil
+}
+
+// tgFolderSpacesMapForLogoutCleanup returns a copy of the folder-space map. It prefers the
+// in-memory UserLogin metadata; if that map is empty, it reloads metadata from the database so
+// cleanup still runs when RAM and DB diverged.
+func (tc *TelegramClient) tgFolderSpacesMapForLogoutCleanup(ctx context.Context) map[string]id.RoomID {
+	if tc.metadata != nil && len(tc.metadata.TGFolderSpaces) > 0 {
+		return maps.Clone(tc.metadata.TGFolderSpaces)
+	}
+	row, err := tc.main.Bridge.DB.UserLogin.GetByID(ctx, tc.userLogin.ID)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to reload user login from DB for Telegram folder space cleanup")
+		return nil
+	}
+	if row == nil {
+		return nil
+	}
+	dbm, ok := row.Metadata.(*UserLoginMetadata)
+	if !ok || dbm == nil || len(dbm.TGFolderSpaces) == 0 {
+		return nil
+	}
+	zerolog.Ctx(ctx).Info().
+		Int("folder_space_count", len(dbm.TGFolderSpaces)).
+		Msg("Reloaded TG folder spaces from DB for logout cleanup (in-memory map was empty)")
+	return maps.Clone(dbm.TGFolderSpaces)
+}
+
+// deleteTGFolderMatrixSpacesOnLogout removes Matrix spaces created for Telegram chat folders.
+// They are not bridge portals, so bridge.cleanup_on_logout does not delete them; without this,
+// deleting the personal Telegram space leaves folder spaces on the server (often shown as top-level spaces).
+func (tc *TelegramClient) deleteTGFolderMatrixSpacesOnLogout(ctx context.Context) {
+	log := zerolog.Ctx(ctx)
+	if !tc.main.Bridge.Config.CleanupOnLogout.Enabled {
+		log.Debug().Msg("Skipping Telegram folder Matrix space cleanup on logout (bridge.cleanup_on_logout disabled)")
+		return
+	}
+	if !tc.main.Config.FolderSpaces || !tc.main.Bridge.Config.PersonalFilteringSpaces {
+		log.Debug().
+			Bool("folder_spaces", tc.main.Config.FolderSpaces).
+			Bool("personal_filtering_spaces", tc.main.Bridge.Config.PersonalFilteringSpaces).
+			Msg("Skipping Telegram folder Matrix space cleanup on logout (folder spaces or personal filtering space off)")
+		return
+	}
+	toDelete := tc.tgFolderSpacesMapForLogoutCleanup(ctx)
+	if len(toDelete) == 0 {
+		log.Info().Msg("No Telegram folder Matrix spaces to delete on logout (metadata and DB had no tg_folder_spaces)")
+		return
+	}
+	log.Info().Int("folder_space_count", len(toDelete)).Msg("Deleting Telegram folder Matrix spaces on logout")
+	for key, roomID := range toDelete {
+		if roomID == "" {
+			continue
+		}
+		if err := tc.main.Bridge.Bot.DeleteRoom(ctx, roomID, false); err != nil {
+			log.Err(err).Str("folder_map_key", key).Stringer("folder_space_room_id", roomID).
+				Msg("Failed to delete Telegram folder Matrix space on logout")
+		} else {
+			log.Info().Str("folder_map_key", key).Stringer("folder_space_room_id", roomID).
+				Msg("Deleted Telegram folder Matrix space on logout")
+		}
+	}
+	if tc.metadata != nil {
+		tc.metadata.TGFolderSpaces = nil
+		tc.metadata.TGFolderOrder = nil
+	}
+}
+
+func (tc *TelegramClient) snapshotTGFolderSpaceRoomIDs() []id.RoomID {
+	if !tc.main.Bridge.Config.CleanupOnLogout.Enabled {
+		return nil
+	}
+	if !tc.main.Config.FolderSpaces || !tc.main.Bridge.Config.PersonalFilteringSpaces {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	m := tc.tgFolderSpacesMapForLogoutCleanup(ctx)
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]id.RoomID, 0, len(m))
+	for _, mx := range m {
+		if mx != "" {
+			out = append(out, mx)
+		}
+	}
+	return out
 }
 
 func (tc *TelegramClient) reconcileTelegramFolderSpaces(ctx context.Context) error {

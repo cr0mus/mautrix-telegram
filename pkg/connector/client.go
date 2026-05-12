@@ -489,9 +489,20 @@ func (tc *TelegramClient) onSession() {
 
 func (tc *TelegramClient) onAuthError(err error) {
 	tc.sendBadCredentialsOrUnknownError(err)
+	folderRooms := tc.snapshotTGFolderSpaceRoomIDs()
 	tc.metadata.ResetOnLogout()
 	go func() {
 		tc.Disconnect()
+		if len(folderRooms) > 0 {
+			delCtx, cancel := context.WithTimeout(tc.main.Bridge.BackgroundCtx, 3*time.Minute)
+			for _, roomID := range folderRooms {
+				if err := tc.main.Bridge.Bot.DeleteRoom(delCtx, roomID, false); err != nil {
+					tc.userLogin.Log.Err(err).Stringer("folder_space_room_id", roomID).
+						Msg("Failed to delete Telegram folder Matrix space after auth error")
+				}
+			}
+			cancel()
+		}
 		if err := tc.userLogin.Save(context.Background()); err != nil {
 			tc.main.Bridge.Log.Err(err).Msg("failed to save user login")
 		}
@@ -592,20 +603,33 @@ func (tc *TelegramClient) LogoutRemote(ctx context.Context) {
 
 	log.Info().Msg("Logging out and disconnecting")
 
-	if tc.metadata.Session.HasAuthKey() {
+	// Stop Telegram updates before any slow Matrix work. Otherwise chat sync can still
+	// create portals while deleteTGFolderMatrixSpacesOnLogout runs; those rooms are then
+	// missing from the logout portal snapshot and stay on the user's account (often under Home).
+	if tc.metadata.Session.HasAuthKey() && tc.client != nil {
 		log.Info().Msg("User has an auth key, logging out")
 
 		// logging out is best effort, we want to logout even if we can't call the endpoint
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		_, err := tc.client.API().AuthLogOut(ctx)
+		authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := tc.client.API().AuthLogOut(authCtx)
+		authCancel()
 		if err != nil {
 			log.Err(err).Msg("failed to logout on Telegram")
 		}
 	}
 
 	tc.Disconnect()
+
+	// Best-effort sweep: delete any portal rooms that belong to this receiver login even if the
+	// user_portal row wasn't written before logout started (or was written after the snapshot was taken).
+	// Without this, some Telegram rooms can remain visible under Home even though cleanup_on_logout is delete.
+	sweepCtx, sweepCancel := context.WithTimeout(tc.main.Bridge.BackgroundCtx, 2*time.Minute)
+	tc.sweepReceiverPortalsOnLogout(sweepCtx)
+	sweepCancel()
+
+	delCtx, delCancel := context.WithTimeout(tc.main.Bridge.BackgroundCtx, 3*time.Minute)
+	tc.deleteTGFolderMatrixSpacesOnLogout(delCtx)
+	delCancel()
 
 	log.Info().Msg("Deleting user state")
 
@@ -625,6 +649,68 @@ func (tc *TelegramClient) LogoutRemote(ctx context.Context) {
 	}
 
 	log.Info().Msg("Logged out and deleted user state")
+}
+
+func (tc *TelegramClient) sweepReceiverPortalsOnLogout(ctx context.Context) {
+	log := zerolog.Ctx(ctx).With().
+		Str("action", "logout_sweep_receiver_portals").
+		Str("login_id", string(tc.loginID)).
+		Logger()
+
+	if !tc.main.Bridge.Config.CleanupOnLogout.Enabled {
+		return
+	}
+
+	// Do a couple of quick passes to catch late inserts.
+	for pass := 1; pass <= 3; pass++ {
+		rows, err := tc.main.Bridge.DB.Portal.GetAllWithMXID(ctx)
+		if err != nil {
+			log.Warn().Err(err).Int("pass", pass).Msg("Failed to list portals for receiver logout sweep")
+			return
+		}
+		toDeleteRows := make([]*database.Portal, 0, 8)
+		for _, p := range rows {
+			if p == nil || p.MXID == "" {
+				continue
+			}
+			if p.Receiver == tc.loginID {
+				toDeleteRows = append(toDeleteRows, p)
+			}
+		}
+		if len(toDeleteRows) == 0 {
+			return
+		}
+		toDelete := make([]*bridgev2.Portal, 0, len(toDeleteRows))
+		for _, row := range toDeleteRows {
+			portal, err := tc.main.Bridge.GetExistingPortalByKey(ctx, row.PortalKey)
+			if err != nil {
+				log.Warn().Err(err).
+					Str("portal_id", string(row.ID)).
+					Str("portal_receiver", string(row.Receiver)).
+					Msg("Failed to load portal during logout sweep")
+				continue
+			}
+			if portal != nil {
+				toDelete = append(toDelete, portal)
+			}
+		}
+		if len(toDelete) == 0 {
+			return
+		}
+		log.Info().Int("pass", pass).Int("portal_count", len(toDelete)).Msg("Deleting receiver portal rooms during logout sweep")
+		bridgev2.DeleteManyPortals(ctx, toDelete, func(portal *bridgev2.Portal, deletedRow bool, err error) {
+			ev := log.Warn().Err(err).
+				Str("portal_id", string(portal.PortalKey.ID)).
+				Str("portal_receiver", string(portal.PortalKey.Receiver)).
+				Stringer("portal_mxid", portal.MXID)
+			if deletedRow {
+				ev.Msg("Failed to delete portal room during logout sweep")
+			} else {
+				ev.Msg("Failed to delete portal row during logout sweep")
+			}
+		})
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func (tc *TelegramClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
